@@ -53,6 +53,7 @@ serde_json = "1.0.62"
 ring = "0.16.19"
 pad = "0.1.6"
 console = "0.14.0"
+ctrlc = "3.1.7"
 
 [dependencies.reqwest]
 features = ["gzip"]

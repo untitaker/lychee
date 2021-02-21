@@ -5,7 +5,11 @@ use headers::{Authorization, HeaderMap, HeaderMapExt, HeaderName};
 use indicatif::{ProgressBar, ProgressStyle};
 use options::Format;
 use regex::RegexSet;
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use std::{fs, str::FromStr};
 use structopt::StructOpt;
 use tokio::sync::mpsc;
@@ -25,23 +29,26 @@ use lychee::{ClientBuilder, ClientPool, Response};
 /// A C-like enum that can be cast to `i32` and used as process exit code.
 enum ExitCode {
     Success = 0,
-    // NOTE: exit code 1 is used for any `Result::Err` bubbled up to `main()` using the `?` operator.
-    // For now, 1 acts as a catch-all for everything non-link related (including config errors),
-    // until we find a way to structure the error code handling better.
+    /// NOTE: exit code 1 is used for any `Result::Err` bubbled up to `main()` using the `?` operator.
+    /// For now, 1 acts as a catch-all for everything non-link related (including config errors),
+    /// until we find a way to structure the error code handling better.
     #[allow(unused)]
     UnexpectedFailure = 1,
     LinkCheckFailure = 2,
+    /// Process was interrupted with SIGTERM
+    Interrupt = 3,
 }
 
+// std::process::exit doesn't guarantee that all destructors will be run,
+// therefore we wrap the "main" code inside another function to ensure that.
+// See: https://doc.rust-lang.org/stable/std/process/fn.exit.html
+// See: https://www.youtube.com/watch?v=zQC8T71Y8e4
 fn main() -> Result<()> {
-    // std::process::exit doesn't guarantee that all destructors will be ran,
-    // therefore we wrap "main" code in another function to guarantee that.
-    // See: https://doc.rust-lang.org/stable/std/process/fn.exit.html
-    // Also see: https://www.youtube.com/watch?v=zQC8T71Y8e4
     let exit_code = run_main()?;
     std::process::exit(exit_code);
 }
 
+/// Set up the tokio runtime and pass control to the application logic
 fn run_main() -> Result<i32> {
     let mut opts = LycheeOptions::from_args();
 
@@ -101,6 +108,15 @@ fn fmt(stats: &ResponseStats, format: &Format) -> Result<String> {
 }
 
 async fn run(cfg: &Config, inputs: Vec<Input>) -> Result<i32> {
+    let stats = ResponseStats::new();
+
+    let mystats = stats.clone();
+    ctrlc::set_handler(move || {
+        println!("Received Ctrl-C; exit.");
+        write_stats(&mystats, &Format::String, &None).unwrap();
+        std::process::exit(ExitCode::Interrupt as i32);
+    })?;
+
     let mut headers = parse_headers(&cfg.headers)?;
     if let Some(auth) = &cfg.basic_auth {
         let auth_header = parse_basic_auth(&auth)?;
@@ -155,8 +171,6 @@ async fn run(cfg: &Config, inputs: Vec<Input>) -> Result<i32> {
     let (send_req, recv_req) = mpsc::channel(max_concurrency);
     let (send_resp, mut recv_resp) = mpsc::channel(max_concurrency);
 
-    let mut stats = ResponseStats::new();
-
     let bar = pb.clone();
     tokio::spawn(async move {
         for link in links {
@@ -174,9 +188,10 @@ async fn run(cfg: &Config, inputs: Vec<Input>) -> Result<i32> {
         clients.listen().await;
     });
 
+    let mut foostats = (*stats).clone();
     while let Some(response) = recv_resp.recv().await {
         show_progress(&pb, &response, cfg.verbose);
-        stats.add(response);
+        foostats.add(response);
     }
 
     // Note that print statements may interfere with the progress bar, so this
@@ -185,17 +200,21 @@ async fn run(cfg: &Config, inputs: Vec<Input>) -> Result<i32> {
         pb.finish_with_message("Done");
     }
 
-    let stats_formatted = fmt(&stats, &cfg.format)?;
-    if let Some(output) = &cfg.output {
-        fs::write(output, stats_formatted).context("Cannot write status output to file")?;
-    } else {
-        println!("\n{}", stats_formatted);
-    }
+    write_stats(&stats, &cfg.format, &cfg.output)?;
 
     match stats.is_success() {
         true => Ok(ExitCode::Success as i32),
         false => Ok(ExitCode::LinkCheckFailure as i32),
     }
+}
+
+fn write_stats(stats: &ResponseStats, format: &Format, output: &Option<PathBuf>) -> Result<()> {
+    let stats_formatted = fmt(&stats, &format)?;
+    Ok(if let Some(output) = output {
+        fs::write(output, stats_formatted).context("Cannot write status output to file")?;
+    } else {
+        println!("\n{}", stats_formatted);
+    })
 }
 
 fn read_header(input: &str) -> Result<(String, String)> {

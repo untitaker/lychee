@@ -1,5 +1,6 @@
 use pad::{Alignment, PadStr};
 use serde::Serialize;
+use std::sync::{Arc, RwLock};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -12,7 +13,7 @@ use lychee::{collector::Input, Response, Status::*};
 const MAX_PADDING: usize = 20;
 
 #[derive(Serialize)]
-pub struct ResponseStats {
+struct Stats {
     total: usize,
     successful: usize,
     failures: usize,
@@ -23,43 +24,57 @@ pub struct ResponseStats {
     fail_map: HashMap<Input, HashSet<Response>>,
 }
 
+#[derive(Serialize)]
+pub struct ResponseStats {
+    inner: RwLock<Stats>,
+}
+
 impl ResponseStats {
-    pub fn new() -> Self {
+    pub fn new() -> Arc<Self> {
         let fail_map = HashMap::new();
-        ResponseStats {
-            total: 0,
-            successful: 0,
-            failures: 0,
-            timeouts: 0,
-            redirects: 0,
-            excludes: 0,
-            errors: 0,
-            fail_map,
-        }
+        Arc::new(ResponseStats {
+            inner: RwLock::new(Stats {
+                total: 0,
+                successful: 0,
+                failures: 0,
+                timeouts: 0,
+                redirects: 0,
+                excludes: 0,
+                errors: 0,
+                fail_map,
+            }),
+        })
     }
 
     pub fn add(&mut self, response: Response) {
-        self.total += 1;
+        self.inner.get_mut().unwrap().total += 1;
         match response.status {
-            Failed(_) => self.failures += 1,
-            Timeout(_) => self.timeouts += 1,
-            Redirected(_) => self.redirects += 1,
-            Excluded => self.excludes += 1,
-            Error(_) => self.errors += 1,
-            _ => self.successful += 1,
+            Failed(_) => self.inner.write().unwrap().failures += 1,
+            Timeout(_) => self.inner.write().unwrap().timeouts += 1,
+            Redirected(_) => self.inner.write().unwrap().redirects += 1,
+            Excluded => self.inner.write().unwrap().excludes += 1,
+            Error(_) => self.inner.write().unwrap().errors += 1,
+            _ => self.inner.write().unwrap().successful += 1,
         }
 
         if matches!(
             response.status,
             Failed(_) | Timeout(_) | Redirected(_) | Error(_)
         ) {
-            let fail = self.fail_map.entry(response.source.clone()).or_default();
+            let fail = self
+                .inner
+                .write()
+                .unwrap()
+                .fail_map
+                .entry(response.source.clone())
+                .or_default();
             fail.insert(response);
         };
     }
 
     pub fn is_success(&self) -> bool {
-        self.total == self.successful + self.excludes
+        self.inner.read().unwrap().total
+            == self.inner.read().unwrap().successful + self.inner.read().unwrap().excludes
     }
 }
 
@@ -80,17 +95,21 @@ impl Display for ResponseStats {
 
         writeln!(f, "📝 Summary")?;
         writeln!(f, "{}", separator)?;
-        write_stat(f, "🔍 Total", self.total)?;
-        write_stat(f, "✅ Successful", self.successful)?;
-        write_stat(f, "⏳ Timeouts", self.timeouts)?;
-        write_stat(f, "🔀 Redirected", self.redirects)?;
-        write_stat(f, "👻 Excluded", self.excludes)?;
-        write_stat(f, "🚫 Errors", self.errors + self.failures)?;
+        write_stat(f, "🔍 Total", self.inner.read().unwrap().total)?;
+        write_stat(f, "✅ Successful", self.inner.read().unwrap().successful)?;
+        write_stat(f, "⏳ Timeouts", self.inner.read().unwrap().timeouts)?;
+        write_stat(f, "🔀 Redirected", self.inner.read().unwrap().redirects)?;
+        write_stat(f, "👻 Excluded", self.inner.read().unwrap().excludes)?;
+        write_stat(
+            f,
+            "🚫 Errors",
+            self.inner.read().unwrap().errors + self.inner.read().unwrap().failures,
+        )?;
 
-        if !&self.fail_map.is_empty() {
+        if !&self.inner.read().unwrap().fail_map.is_empty() {
             writeln!(f)?;
         }
-        for (input, responses) in &self.fail_map {
+        for (input, responses) in &self.inner.read().unwrap().fail_map {
             writeln!(f, "Input: {}", input)?;
             for response in responses {
                 writeln!(
@@ -148,6 +167,6 @@ mod test_super {
             .into_iter()
             .collect::<HashSet<_>>(),
         );
-        assert_eq!(stats.fail_map, expected_map);
+        assert_eq!(stats.inner.read().unwrap().fail_map, expected_map);
     }
 }
