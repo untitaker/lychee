@@ -1,7 +1,7 @@
+use std::collections::HashSet;
+
 use crate::{extract::Extractor, Base, Input, Request, Result};
-use async_stream::try_stream;
-use futures_core::Stream;
-use tokio_stream::StreamExt;
+use rayon::prelude::*;
 
 /// Collector keeps the state of link collection
 #[derive(Debug, Clone)]
@@ -33,45 +33,37 @@ impl Collector {
     /// # Errors
     ///
     /// Will return `Err` if links cannot be extracted from an input
-    pub async fn collect_links(self, inputs: &[Input]) -> impl Stream<Item = Result<Request>> + '_ {
-        try_stream! {
-            let (contents_tx, mut contents_rx) = tokio::sync::mpsc::channel(self.max_concurrency);
-
-            // extract input contents
-            for input in inputs.iter().cloned() {
-                let sender = contents_tx.clone();
-
-                let skip_missing_inputs = self.skip_missing_inputs;
-
-                let contents = input.get_contents(None, skip_missing_inputs).await;
-                tokio::pin!(contents);
-                while let Some(content) = contents.next().await {
-                    sender.send(content?).await?;
-                }
-            }
-
-            // receiver will get None once all tasks are done
-            drop(contents_tx);
-
-            // extract links from input contents
-            let mut extract_links_handles = vec![];
-
-            while let Some(content) = contents_rx.recv().await {
+    /// We will return immediately on first error to avoid missing invalid inputs.
+    pub async fn collect_links(self, inputs: &[Input]) -> Result<HashSet<Request>> {
+        // extract input contents
+        Ok(inputs
+            .par_iter()
+            .flat_map(|input| input.get_contents(None, self.skip_missing_inputs))
+            .flatten()
+            .flat_map(|content| {
                 let base = self.base.clone();
-                let handle = tokio::task::spawn_blocking(move || {
-                    let mut extractor = Extractor::new(base);
-                    extractor.extract(&content)
-                });
-                extract_links_handles.push(handle);
-            }
+                let mut extractor = Extractor::new(base);
+                extractor.extract(&content)
+            })
+            .flatten()
+            .collect::<HashSet<_>>())
 
-            for handle in extract_links_handles {
-                let new_links = handle.await??;
-                for link in new_links {
-                    yield link;
-                }
-            }
-        }
+        // let input_contents = inputs
+        //     .par_iter()
+        //     .map(|input| input.get_contents(None, self.skip_missing_inputs))
+        //     .collect::<Result<Vec<_>>>()?;
+
+        // Ok(input_contents
+        //     .par_iter()
+        //     .flatten()
+        //     .map(|content| {
+        //         let base = self.base.clone();
+        //         let mut extractor = Extractor::new(base);
+        //         extractor.extract(&content)
+        //     })
+        //     .flatten()
+        //     .flatten()
+        //     .collect::<HashSet<_>>())
     }
 }
 

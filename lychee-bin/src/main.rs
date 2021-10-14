@@ -58,15 +58,15 @@
 #![deny(anonymous_parameters, macro_use_extern_crate, pointer_structural_match)]
 #![deny(missing_docs)]
 
+use std::collections::HashSet;
+
 use lychee_lib::{Collector, Input};
 // required for apple silicon
 use ring as _;
 
 use anyhow::{anyhow, Result};
-use futures::stream::TryStreamExt;
 use openssl_sys as _; // required for vendored-openssl feature
 use ring as _; // required for apple silicon
-use tokio_stream::StreamExt;
 
 mod client;
 mod commands;
@@ -117,15 +117,14 @@ fn run_main() -> Result<i32> {
 }
 
 async fn run(cfg: &Config, inputs: Vec<Input>) -> Result<i32> {
-    let links = Collector::new(cfg.base.clone(), cfg.skip_missing, cfg.max_concurrency)
+    let links: HashSet<_> = Collector::new(cfg.base.clone(), cfg.skip_missing, cfg.max_concurrency)
         .collect_links(&inputs)
         .await
-        .map_err(|e| anyhow!("Cannot collect links from inputs: {}", e));
+        .map_err(|e| anyhow!("Cannot collect links from inputs: {}", e))?;
     let client = client::create(cfg)?;
 
     let exit_code = if cfg.dump {
-        let links = links.collect::<Result<Vec<_>>>().await?;
-        commands::dump(links.iter().filter(|link| !client.filtered(&link.uri)))
+        commands::dump(links)
     } else {
         commands::check(client, links, cfg).await?
     };

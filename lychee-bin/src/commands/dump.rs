@@ -1,11 +1,11 @@
-use std::io::{self, Write};
+use std::{collections::HashSet, io::{self, Write}};
 
 use lychee_lib::Request;
 
 use crate::ExitCode;
 
 /// Dump all detected links to stdout without checking them
-pub(crate) fn dump<'a>(links: impl Iterator<Item = &'a Request>) -> ExitCode {
+pub(crate) fn dump<'a>(links: HashSet<Request>) -> ExitCode {
     let mut stdout = io::stdout();
     for link in links {
         // Avoid panic on broken pipe.

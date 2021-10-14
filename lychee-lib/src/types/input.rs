@@ -1,15 +1,12 @@
 use crate::types::FileType;
 use crate::Result;
-use async_stream::try_stream;
-use futures_core::stream::Stream;
 use glob::glob_with;
-use jwalk::WalkDir;
 use reqwest::Url;
 use serde::Serialize;
 use shellexpand::tilde;
-use std::fmt::Display;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use tokio::io::{stdin, AsyncReadExt};
+use std::{fmt::Display, fs::read_to_string};
 
 const STDIN: &str = "-";
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -111,68 +108,32 @@ impl Input {
     /// Returns an error if the contents can not be retrieved
     /// because of an underlying I/O error (e.g. an error while making a
     /// network request or retrieving the contents from the file system)
-    pub async fn get_contents(
+    pub fn get_contents(
         &self,
         file_type_hint: Option<FileType>,
         skip_missing: bool,
-    ) -> impl Stream<Item = Result<InputContent>> + '_ {
-        try_stream! {
-            match *self {
-                // TODO: should skip_missing also affect URLs?
-                Input::RemoteUrl(ref url) => {
-                    let contents: InputContent = Self::url_contents(url).await?;
-                    yield contents;
-                },
-                Input::FsGlob {
-                    ref pattern,
-                    ignore_case,
-                } => {
-                    for await content in Self::glob_contents(pattern, ignore_case).await {
-                        let content = content?;
-                        yield content;
-                    }
+    ) -> Result<Vec<InputContent>> {
+        match *self {
+            // TODO: should skip_missing also affect URLs?
+            Input::RemoteUrl(ref url) => Ok(vec![Self::url_contents(url)?]),
+            Input::FsGlob {
+                ref pattern,
+                ignore_case,
+            } => Ok(Self::glob_contents(pattern, ignore_case)?),
+            Input::FsPath(ref path) => {
+                let content = Self::path_content(path);
+                match content {
+                    Ok(input_content) => Ok(vec![input_content]),
+                    Err(_) if skip_missing => Ok(vec![]),
+                    Err(e) => Err(e),
                 }
-                Input::FsPath(ref path) => {
-                    if path.is_dir() {
-                        for entry in WalkDir::new(path).skip_hidden(true) {
-                            let entry = entry?;
-                            if entry.file_type().is_dir() {
-                                continue;
-                            }
-                            if !Self::valid_extension(&entry.path()) {
-                                continue
-                            }
-                            let content = Self::path_content(entry.path()).await?;
-                            yield content;
-                        }
-                    } else {
-                        let content = Self::path_content(path).await;
-                        match content {
-                            Err(_) if skip_missing => (),
-                            Err(e) => Err(e)?,
-                            Ok(content) => yield content,
-                        };
-                    }
-                },
-                Input::Stdin => {
-                    let content = Self::stdin_content(file_type_hint).await?;
-                    yield content;
-                },
-                Input::String(ref s) => {
-                    let content = Self::string_content(s, file_type_hint);
-                    yield content;
-                },
             }
+            Input::Stdin => Ok(vec![Self::stdin_content(file_type_hint)?]),
+            Input::String(ref s) => Ok(vec![Self::string_content(s, file_type_hint)]),
         }
     }
 
-    // Check the extension of the given path against the list of known/accepted
-    // file extensions
-    fn valid_extension(p: &Path) -> bool {
-        matches!(FileType::from(p), FileType::Markdown | FileType::Html)
-    }
-
-    async fn url_contents(url: &Url) -> Result<InputContent> {
+    fn url_contents(url: &Url) -> Result<InputContent> {
         // Assume HTML for default paths
         let file_type = if url.path().is_empty() || url.path() == "/" {
             FileType::Html
@@ -180,56 +141,50 @@ impl Input {
             FileType::from(url.as_str())
         };
 
-        let res = reqwest::get(url.clone()).await?;
+        let res = reqwest::blocking::get(url.clone())?;
         let input_content = InputContent {
             input: Input::RemoteUrl(Box::new(url.clone())),
             file_type,
-            content: res.text().await?,
+            content: res.text()?,
         };
 
         Ok(input_content)
     }
 
-    async fn glob_contents(
-        path_glob: &str,
-        ignore_case: bool,
-    ) -> impl Stream<Item = Result<InputContent>> + '_ {
-        let glob_expanded = tilde(&path_glob).to_string();
+    fn glob_contents(path_glob: &str, ignore_case: bool) -> Result<Vec<InputContent>> {
+        let mut contents = vec![];
+        let glob_expanded = tilde(&path_glob);
         let mut match_opts = glob::MatchOptions::new();
 
         match_opts.case_sensitive = !ignore_case;
 
-        try_stream! {
-            for entry in glob_with(&glob_expanded, match_opts)? {
-                match entry {
-                    Ok(path) => {
-                        // Directories can have a suffix which looks like
-                        // a file extension (like `foo.html`). This can lead to
+        for entry in glob_with(&glob_expanded, match_opts)? {
+            match entry {
+                Ok(path) => {
+                    if path.is_dir() {
+                        // Directories can still have a suffix which looks like
+                        // a file extension like `foo.html`. This can lead to
                         // unexpected behavior with glob patterns like
                         // `**/*.html`. Therefore filter these out.
-                        // See https://github.com/lycheeverse/lychee/pull/262#issuecomment-913226819
-                        if path.is_dir() {
-                            continue;
-                        }
-                        let content: InputContent = Self::path_content(&path).await?;
-                        yield content;
+                        // https://github.com/lycheeverse/lychee/pull/262#issuecomment-913226819
+                        continue;
                     }
-                    Err(e) => println!("{:?}", e),
+                    let content = Self::path_content(&path)?;
+                    contents.push(content);
                 }
+                Err(e) => println!("{:?}", e),
             }
         }
+
+        Ok(contents)
     }
 
     /// Get the input content of a given path
     /// # Errors
     ///
     /// Will return `Err` if file contents can't be read
-    pub async fn path_content<P: Into<PathBuf> + AsRef<Path> + Clone>(
-        path: P,
-    ) -> Result<InputContent> {
-        let content = tokio::fs::read_to_string(&path)
-            .await
-            .map_err(|e| (path.clone().into(), e))?;
+    pub fn path_content<P: Into<PathBuf> + AsRef<Path> + Clone>(path: P) -> Result<InputContent> {
+        let content = read_to_string(&path).map_err(|e| (path.clone().into(), e))?;
         let input_content = InputContent {
             file_type: FileType::from(path.as_ref()),
             content,
@@ -239,10 +194,10 @@ impl Input {
         Ok(input_content)
     }
 
-    async fn stdin_content(file_type_hint: Option<FileType>) -> Result<InputContent> {
+    fn stdin_content(file_type_hint: Option<FileType>) -> Result<InputContent> {
         let mut content = String::new();
-        let mut stdin = stdin();
-        stdin.read_to_string(&mut content).await?;
+        let mut stdin = std::io::stdin();
+        stdin.read_to_string(&mut content)?;
 
         let input_content = InputContent {
             input: Input::Stdin,

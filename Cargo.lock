@@ -1659,6 +1659,7 @@ dependencies = [
  "percent-encoding",
  "pretty_assertions",
  "pulldown-cmark",
+ "rayon",
  "regex",
  "reqwest",
  "ring",

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::Result;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
@@ -12,9 +14,7 @@ use crate::{
 };
 use lychee_lib::{Client, Request, Response};
 
-pub(crate) async fn check<S>(client: Client, links: S, cfg: &Config) -> Result<ExitCode>
-where
-    S: futures::Stream<Item = Result<Request>>,
+pub(crate) async fn check(client: Client, links: HashSet<Request>, cfg: &Config) -> Result<ExitCode>
 {
     let (send_req, recv_req) = mpsc::channel(cfg.max_concurrency);
     let (send_resp, mut recv_resp) = mpsc::channel(cfg.max_concurrency);
@@ -59,10 +59,7 @@ where
         }
     });
 
-    tokio::pin!(links);
-
-    while let Some(link) = links.next().await {
-        let link = link?;
+    for link in links {
         if let Some(pb) = &bar {
             pb.inc_length(1);
             pb.set_message(&link.to_string());
