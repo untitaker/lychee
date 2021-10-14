@@ -66,7 +66,6 @@ use anyhow::{anyhow, Result};
 use futures::stream::TryStreamExt;
 use openssl_sys as _; // required for vendored-openssl feature
 use ring as _; // required for apple silicon
-use tokio_stream::StreamExt;
 
 mod client;
 mod commands;
@@ -117,15 +116,15 @@ fn run_main() -> Result<i32> {
 }
 
 async fn run(cfg: &Config, inputs: Vec<Input>) -> Result<i32> {
+    let client = client::create(cfg)?;
     let links = Collector::new(cfg.base.clone(), cfg.skip_missing, cfg.max_concurrency)
-        .collect_links(&inputs)
+        .collect_links(inputs)
         .await
         .map_err(|e| anyhow!("Cannot collect links from inputs: {}", e));
-    let client = client::create(cfg)?;
 
+    println!("Done extracting");
     let exit_code = if cfg.dump {
-        let links = links.collect::<Result<Vec<_>>>().await?;
-        commands::dump(links.iter().filter(|link| !client.filtered(&link.uri)))
+        commands::dump(client, links).await?
     } else {
         commands::check(client, links, cfg).await?
     };

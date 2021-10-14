@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::Result;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
@@ -14,7 +16,7 @@ use lychee_lib::{Client, Request, Response};
 
 pub(crate) async fn check<S>(client: Client, links: S, cfg: &Config) -> Result<ExitCode>
 where
-    S: futures::Stream<Item = Result<Request>>,
+    S: futures::Stream<Item = Result<HashSet<Request>>>,
 {
     let (send_req, recv_req) = mpsc::channel(cfg.max_concurrency);
     let (send_resp, mut recv_resp) = mpsc::channel(cfg.max_concurrency);
@@ -22,8 +24,8 @@ where
     let mut stats = ResponseStats::new();
 
     // Start receiving requests
+    println!("Check loop");
     tokio::spawn(async move {
-        println!("Spawn checker");
         futures::StreamExt::for_each_concurrent(
             ReceiverStream::new(recv_req),
             max_concurrency,
@@ -61,13 +63,14 @@ where
 
     tokio::pin!(links);
 
-    while let Some(link) = links.next().await {
-        let link = link?;
-        if let Some(pb) = &bar {
-            pb.inc_length(1);
-            pb.set_message(&link.to_string());
-        };
-        send_req.send(link).await.unwrap();
+    while let Some(links) = links.next().await {
+        for link in links? {
+            if let Some(pb) = &bar {
+                pb.inc_length(1);
+                pb.set_message(&link.to_string());
+            };
+            send_req.send(link).await.unwrap();
+        }
     }
     // required for the receiver task to end, which closes send_resp, which allows
     // the show_results_task to finish

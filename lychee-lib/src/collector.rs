@@ -1,8 +1,14 @@
-use crate::{extract::Extractor, Base, Input, Request, Result};
-use async_stream::try_stream;
-use futures_core::Stream;
-use tokio_stream::StreamExt;
+use std::{collections::HashSet, pin::Pin};
 
+use crate::{extract::Extractor, types::InputContent, Base, Input, Request, Result};
+use async_stream::try_stream;
+// use futures_core::{Future, Stream};
+// use futures_util::StreamExt;
+// use par_stream::prelude::*;
+use futures::{future::IntoStream, Future, FutureExt};
+use par_stream::ParStreamExt;
+use tokio_stream::Stream;
+use tokio_stream::StreamExt;
 /// Collector keeps the state of link collection
 #[derive(Debug, Clone)]
 pub struct Collector {
@@ -28,50 +34,91 @@ impl Collector {
 
     /// Fetch all unique links from a slice of inputs
     /// All relative URLs get prefixed with `base` if given.
-    /// (This can be a directory or a base URL)
+    /// (This can be a directory or a base URL.)
     ///
     /// # Errors
     ///
     /// Will return `Err` if links cannot be extracted from an input
-    pub async fn collect_links(self, inputs: &[Input]) -> impl Stream<Item = Result<Request>> + '_ {
-        try_stream! {
-            let (contents_tx, mut contents_rx) = tokio::sync::mpsc::channel(self.max_concurrency);
+    ///
+    // TODO: This returns a Result<HashSet<_>>, but we should figure out a way
+    // how to turn it into a Result<Request>.
+    pub async fn collect_links(
+        self,
+        inputs: Vec<Input>,
+    ) -> impl Stream<Item = Result<HashSet<Request>>> {
+        // ) -> impl Stream<Item = Result<Request>> {
+        let skip_missing = self.skip_missing_inputs;
+        // let contents: Pin<Box<dyn Stream<Item = _> + Send>> = Box::pin(
+        //     inputs
+        //         .into_iter()
+        //         .map(|i| i.get_contents(None, skip_missing))
+        //         .collect(),
+        // );
+        // // tokio::pin!(contents);
+        // let base = self.base;
 
-            // extract input contents
-            for input in inputs.iter().cloned() {
-                let sender = contents_tx.clone();
+        // contents.par_then(None, move |content: Result<InputContent>| {
+        //     let content = content.unwrap();
+        //     let mut extractor = Extractor::new(base.clone());
+        //     let requests: Result<HashSet<Request>> = extractor.extract(&content);
+        //     async move { requests }
+        // })
 
-                let skip_missing_inputs = self.skip_missing_inputs;
-
-                let contents = input.get_contents(None, skip_missing_inputs).await;
+        futures::stream::iter(inputs).par_then_unordered(None, move |input: Input| {
+            let base = self.base.to_owned();
+            async move {
+                println!("Contents of {}", input);
+                let contents = input.get_contents(None, skip_missing).await;
                 tokio::pin!(contents);
+                let mut requests: HashSet<Request> = HashSet::new();
                 while let Some(content) = contents.next().await {
-                    sender.send(content?).await?;
+                    let mut extractor = Extractor::new(base.clone());
+                    println!("Extract");
+                    let new_requests: HashSet<Request> = extractor.extract(&content.unwrap())?;
+                    requests.extend(new_requests)
                 }
+                println!("All done extract");
+                Ok(requests)
             }
+        })
+        // .collect()
+        // .await
 
-            // receiver will get None once all tasks are done
-            drop(contents_tx);
+        // links
 
-            // extract links from input contents
-            let mut extract_links_handles = vec![];
+        // let requests: Vec<_> = contents
+        //     .par_then(None, move |content: Result<InputContent>| {
+        //         let content = content.unwrap();
+        //         let mut extractor = Extractor::new(base.clone());
+        //         let requests: HashSet<Request> = extractor.extract(&content).unwrap();
+        //         async move { requests }
+        //     })
+        //     .collect()
+        //     .await;
+        // requests.into_iter().flatten().collect::<HashSet<Request>>()
 
-            while let Some(content) = contents_rx.recv().await {
-                let base = self.base.clone();
-                let handle = tokio::task::spawn_blocking(move || {
-                    let mut extractor = Extractor::new(base);
-                    extractor.extract(&content)
-                });
-                extract_links_handles.push(handle);
-            }
+        // try_stream! {
 
-            for handle in extract_links_handles {
-                let new_links = handle.await??;
-                for link in new_links {
-                    yield link;
-                }
-            }
-        }
+        // for input in inputs.iter().cloned() {
+        //     let requests = input.get_contents(None, skip_missing).try_par_then_unordered(None, move |content| {
+        //         let content = content.unwrap();
+        //         let mut extractor = Extractor::new(base.clone());
+        //         let requests: HashSet<Request> = extractor.extract(&content).unwrap();
+        //     });
+
+        //     // let contents = input.get_contents(None, skip_missing).await;
+
+        //     // tokio::pin!(contents);
+        //     // while let Some(content) = contents.next().await {
+        //     //     let content = content.unwrap();
+        //     //     let mut extractor = Extractor::new(base.clone());
+        //     //     let requests: HashSet<Request> = extractor.extract(&content).unwrap();
+        //     //     for request in requests {
+        //     //         yield request;
+        //     //     }
+        //     // }
+        // }
+        // }
     }
 }
 
