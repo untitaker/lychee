@@ -11,17 +11,8 @@ mod cli {
     use lychee_lib::Result;
     use predicates::str::contains;
     use pretty_assertions::assert_eq;
+    use test_utils::mock_server;
     use uuid::Uuid;
-
-    macro_rules! mock_server {
-        ($status:expr $(, $func:tt ($($arg:expr),*))*) => {{
-            let mock_server = wiremock::MockServer::start().await;
-            let template = wiremock::ResponseTemplate::new(http::StatusCode::from($status));
-            let template = template$(.$func($($arg),*))*;
-            wiremock::Mock::given(wiremock::matchers::method("GET")).respond_with(template).mount(&mock_server).await;
-            mock_server
-        }};
-    }
 
     fn main_command() -> Command {
         // this gets the "main" binary name (e.g. `lychee`)

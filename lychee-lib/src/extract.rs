@@ -189,15 +189,12 @@ mod test {
     use pretty_assertions::assert_eq;
 
     use super::*;
-    use crate::{
-        helpers::url::find_links,
-        test_utils::{mail, website},
-        Uri,
-    };
+    use crate::{helpers::url::find_links, Uri};
     use crate::{
         types::{FileType, InputContent},
         Base,
     };
+    use test_utils::{mail, website};
 
     #[test]
     fn test_create_uri_from_path() {

@@ -2,11 +2,7 @@ use std::convert::TryFrom;
 
 use reqwest::Url;
 
-use crate::{ClientBuilder, ErrorKind, Request, Uri};
-
 #[macro_export]
-/// Creates a mock web server, which responds with a predefined status when
-/// handling a matching request
 macro_rules! mock_server {
     ($status:expr $(, $func:tt ($($arg:expr),*))*) => {{
         let mock_server = wiremock::MockServer::start().await;
@@ -17,12 +13,12 @@ macro_rules! mock_server {
     }};
 }
 
-pub(crate) async fn get_mock_client_response<T, E>(request: T) -> crate::Response
+pub async fn get_mock_client_response<T, E>(request: T) -> lychee_lib::Response
 where
-    Request: TryFrom<T, Error = E>,
-    ErrorKind: From<E>,
+    lychee_lib::Request: TryFrom<T, Error = E>,
+    lychee_lib::ErrorKind: From<E>,
 {
-    ClientBuilder::default()
+    lychee_lib::ClientBuilder::default()
         .client()
         .unwrap()
         .check(request)
@@ -32,11 +28,11 @@ where
 
 /// Helper method to convert a string into a URI
 /// Note: This panics on error, so it should only be used for testing
-pub(crate) fn website(url: &str) -> Uri {
-    Uri::from(Url::parse(url).expect("Expected valid Website URI"))
+pub fn website(url: &str) -> lychee_lib::Uri {
+    lychee_lib::Uri::from(Url::parse(url).expect("Expected valid Website URI"))
 }
 
-pub(crate) fn mail(address: &str) -> Uri {
+pub fn mail(address: &str) -> lychee_lib::Uri {
     if address.starts_with("mailto:") {
         Url::parse(address)
     } else {

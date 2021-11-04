@@ -154,7 +154,7 @@ mod test {
     use pretty_assertions::assert_eq;
 
     use super::Uri;
-    use crate::test_utils::{mail, website};
+    use test_utils::{mail, website};
 
     #[test]
     fn test_uri_from_str() {

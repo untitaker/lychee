@@ -1,0 +1,12 @@
+[package]
+authors = ["Matthias Endler <matthias@endler.dev>"]
+description = "Test utilities for lychee"
+edition = "2018"
+license = "Apache-2.0/MIT"
+name = "test-utils"
+repository = "https://github.com/lycheeverse/lychee"
+version = "0.8.0"
+
+[dependencies]
+reqwest = "*"
+lychee-lib = { path = "../lychee-lib", version = "0.8.0" }

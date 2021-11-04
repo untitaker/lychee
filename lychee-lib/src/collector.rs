@@ -87,11 +87,10 @@ mod test {
 
     use super::*;
     use crate::{
-        mock_server,
-        test_utils::{mail, website},
         types::{FileType, Input},
         Result, Uri,
     };
+    use test_utils::{mail, mock_server, website};
 
     const TEST_STRING: &str = "http://test-string.com";
     const TEST_URL: &str = "https://test-url.org";

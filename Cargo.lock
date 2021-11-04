@@ -1487,6 +1487,7 @@ dependencies = [
  "serde_json",
  "structopt",
  "tempfile",
+ "test-utils",
  "tokio",
  "toml",
  "tracing-subscriber",
@@ -1522,6 +1523,7 @@ dependencies = [
  "serde",
  "shellexpand",
  "tempfile",
+ "test-utils",
  "tokio",
  "typed-builder",
  "url",
@@ -2622,6 +2624,14 @@ name = "termtree"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13a4ec180a2de59b57434704ccfad967f789b12737738798fa08798cd5824c16"
+
+[[package]]
+name = "test-utils"
+version = "0.8.0"
+dependencies = [
+ "lychee-lib",
+ "reqwest",
+]
 
 [[package]]
 name = "textwrap"

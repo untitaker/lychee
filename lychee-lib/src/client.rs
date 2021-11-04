@@ -325,8 +325,10 @@ mod test {
     use reqwest::header;
     use tempfile::tempdir;
 
+    use crate::Uri;
+
     use super::ClientBuilder;
-    use crate::{mock_server, test_utils::get_mock_client_response, Uri};
+    use test_utils::{get_mock_client_response, mock_server};
 
     #[tokio::test]
     async fn test_nonexistent() {

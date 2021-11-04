@@ -179,7 +179,7 @@ mod test {
     use url::Host;
 
     use super::{Excludes, Filter, Includes};
-    use crate::test_utils::{mail, website};
+    use test_utils::{mail, website};
 
     // Note: the standard library, as of Rust stable 1.47.0, does not expose
     // "link-local" or "private" IPv6 checks. However, one might argue
