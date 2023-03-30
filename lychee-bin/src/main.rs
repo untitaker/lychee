@@ -60,9 +60,10 @@
 
 // required for apple silicon
 use ring as _;
+use stats::color_response;
 
 use std::fs::File;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::iter::FromIterator;
 use std::{collections::HashSet, fs, str::FromStr};
 
@@ -76,15 +77,20 @@ use ring as _; // required for apple silicon
 use structopt::StructOpt;
 use tokio::sync::mpsc;
 
+mod color;
 mod options;
 mod parse;
 mod stats;
+mod writer;
 
 use crate::parse::{parse_basic_auth, parse_headers, parse_statuscodes, parse_timeout};
 use crate::{
     options::{Config, Format, LycheeOptions},
-    stats::{color_response, ResponseStats},
+    stats::ResponseStats,
+    writer::StatsWriter,
 };
+
+const LYCHEE_IGNORE_FILE: &str = ".lycheeignore";
 
 /// A C-like enum that can be cast to `i32` and used as process exit code.
 enum ExitCode {
@@ -108,6 +114,12 @@ fn main() -> Result<()> {
     std::process::exit(exit_code);
 }
 
+// Read lines from file; ignore empty lines
+fn read_lines(file: &File) -> Result<Vec<String>> {
+    let lines: Vec<_> = BufReader::new(file).lines().collect::<Result<_, _>>()?;
+    Ok(lines.into_iter().filter(|line| !line.is_empty()).collect())
+}
+
 fn run_main() -> Result<i32> {
     let mut opts = LycheeOptions::from_args();
 
@@ -116,12 +128,14 @@ fn run_main() -> Result<i32> {
         opts.config.merge(c);
     }
 
+    if let Ok(lycheeignore) = File::open(LYCHEE_IGNORE_FILE) {
+        opts.config.exclude.append(&mut read_lines(&lycheeignore)?);
+    }
+
     // Load excludes from file
     for path in &opts.config.exclude_file {
         let file = File::open(path)?;
-        opts.config
-            .exclude
-            .append(&mut io::BufReader::new(file).lines().collect::<Result<_, _>>()?);
+        opts.config.exclude.append(&mut read_lines(&file)?);
     }
 
     let cfg = &opts.config;
@@ -155,13 +169,6 @@ fn show_progress(progress_bar: &Option<ProgressBar>, response: &Response, verbos
         }
         println!("{}", out);
     }
-}
-
-fn fmt(stats: &ResponseStats, format: &Format) -> Result<String> {
-    Ok(match format {
-        Format::String => stats.to_string(),
-        Format::Json => serde_json::to_string_pretty(&stats)?,
-    })
 }
 
 async fn run(cfg: &Config, inputs: Vec<Input>) -> Result<i32> {
@@ -213,7 +220,10 @@ async fn run(cfg: &Config, inputs: Vec<Input>) -> Result<i32> {
         .map_err(|e| anyhow!(e))?;
 
     if cfg.dump {
-        let exit_code = dump_links(links.iter().filter(|link| !client.filtered(&link.uri)));
+        let exit_code = dump_links(
+            links.iter().filter(|link| !client.filtered(&link.uri)),
+            cfg.verbose,
+        );
         return Ok(exit_code as i32);
     }
 
@@ -261,24 +271,41 @@ async fn run(cfg: &Config, inputs: Vec<Input>) -> Result<i32> {
         pb.finish_and_clear();
     }
 
-    write_stats(&stats, cfg)?;
+    let writer: Box<dyn StatsWriter> = match cfg.format {
+        Format::Compact => Box::new(writer::Compact::new()),
+        Format::Detailed => Box::new(writer::Detailed::new()),
+        Format::Json => Box::new(writer::Json::new()),
+        Format::Markdown => Box::new(writer::Markdown::new()),
+    };
 
-    if stats.is_success() {
-        Ok(ExitCode::Success as i32)
+    let code = if stats.is_success() {
+        ExitCode::Success
     } else {
-        Ok(ExitCode::LinkCheckFailure as i32)
-    }
+        ExitCode::LinkCheckFailure
+    };
+
+    write_stats(&*writer, stats, cfg)?;
+
+    Ok(code as i32)
 }
 
 /// Dump all detected links to stdout without checking them
-fn dump_links<'a>(links: impl Iterator<Item = &'a Request>) -> ExitCode {
+fn dump_links<'a>(links: impl Iterator<Item = &'a Request>, verbose: bool) -> ExitCode {
     let mut stdout = io::stdout();
     for link in links {
         // Avoid panic on broken pipe.
         // See https://github.com/rust-lang/rust/issues/46016
         // This can occur when piping the output of lychee
         // to another program like `grep`.
-        if let Err(e) = writeln!(stdout, "{}", &link) {
+
+        // Only print source in verbose mode. This way the normal link output
+        // can be fed into another tool without data mangling.
+        let output = if verbose {
+            link.to_string()
+        } else {
+            link.uri.to_string()
+        };
+        if let Err(e) = writeln!(stdout, "{}", output) {
             if e.kind() != io::ErrorKind::BrokenPipe {
                 eprintln!("{}", e);
                 return ExitCode::UnexpectedFailure;
@@ -289,18 +316,19 @@ fn dump_links<'a>(links: impl Iterator<Item = &'a Request>) -> ExitCode {
 }
 
 /// Write final statistics to stdout or to file
-fn write_stats(stats: &ResponseStats, cfg: &Config) -> Result<()> {
-    let formatted = fmt(stats, &cfg.format)?;
+fn write_stats(writer: &dyn StatsWriter, stats: ResponseStats, cfg: &Config) -> Result<()> {
+    let is_empty = stats.is_empty();
+    let formatted = writer.write(stats)?;
 
     if let Some(output) = &cfg.output {
         fs::write(output, formatted).context("Cannot write status output to file")?;
     } else {
-        if cfg.verbose && !stats.is_empty() {
+        if cfg.verbose && !is_empty {
             // separate summary from the verbose list of links above
             println!();
         }
         // we assume that the formatted stats don't have a final newline
-        println!("{}", stats);
+        println!("{}", formatted);
     }
     Ok(())
 }
